@@ -1,50 +1,44 @@
-import passport from "passport";
+import passport, { use } from "passport";
+import { validate } from "class-validator";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { getRepository } from "typeorm";
 import { User } from "../entity/User";
 
-import {
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  GOOGLE_CALLBACK_URL,
-} from "../utils/constants";
+import { GOOGLE_STRATEGY_OPTIONS } from "../utils/constants";
+
+import { USER_PAYLOAD } from "../utils/types";
+const userPayload: USER_PAYLOAD = {};
 
 export const initPassport = () => {
-  passport.serializeUser((user: { id: number }, done) => {
-    done(null, user.id);
+  passport.serializeUser((user: USER_PAYLOAD, done) => {
+    return done(null, user.id);
   });
 
-  passport.deserializeUser(async (user: { id: number }, done) => {
+  passport.deserializeUser(async (user: USER_PAYLOAD, done) => {
     const userRepo = getRepository(User);
 
-    await userRepo
-      .findOneOrFail(user.id)
-      .then((user) => {
-        done(null, user);
-      })
-      .catch((err) => {
-        done(err, user);
-      });
+    const getUser = await userRepo.findOne({ id: user.id });
+    if (getUser) {
+      return done(null, getUser);
+    }
   });
 
   // Google oauth 2.0 strategy
   passport.use(
     new GoogleStrategy(
-      {
-        clientID: GOOGLE_CLIENT_ID,
-        clientSecret: GOOGLE_CLIENT_SECRET,
-        callbackURL: GOOGLE_CALLBACK_URL,
-      },
+      GOOGLE_STRATEGY_OPTIONS,
       async (_accessToken: string, _refreshToken: string, profile, done) => {
         const userRepo = getRepository(User);
 
         // check if user is exist
-        await userRepo
-          .findOne({
-            where: { googleProviderId: profile.id },
-          })
-          .then((user) => done(undefined, user))
-          .catch((err) => done(err, null));
+        const user = await userRepo.findOne({
+          where: { googleProviderId: profile.id },
+        });
+
+        if (user) {
+          userPayload.id = user.id;
+          return done(null!, userPayload);
+        }
 
         // create new user instance
         const newUser = new User();
@@ -59,11 +53,19 @@ export const initPassport = () => {
             ? profile.photos[0].value
             : "";
 
+        const errors = await validate(newUser);
+        if (errors.length > 0) {
+          return done(errors.toString());
+        }
+
         // save user to database
         await userRepo
           .save(newUser)
-          .then((user) => done(undefined, user))
-          .catch((err) => done(err, null));
+          .then((user) => {
+            userPayload.id = user.id;
+            return done(undefined, userPayload);
+          })
+          .catch((err) => done(err));
       }
     )
   );
